@@ -8,7 +8,7 @@ SERVER=""
 USERNAME=""
 PASSWORD=""
 ABSENDER=""
-EMPFAENGER=""
+EMPFÄNGER=""
 
 # Schritt 1: Alte Fail2Ban-Version deinstallieren
 echo "Entferne alte Fail2ban-Version, falls vorhanden..."
@@ -51,20 +51,14 @@ REASON="\$3"
 EMAIL="$EMPFÄNGER"
 
 # Ermittelt die Abuse-Adresse
-ABUSE_EMAIL=\$(whois "\$IP" | grep -i "abuse" | grep -Eo "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}" | head -n 1)
+ABUSE_EMAIL=\$(whois "\$IP" | grep -Ei 'abuse|e-mail:' | grep -Eo '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}' | head -n 1)
 
 # Nachrichtentext und Betreff
-SUBJECT="Fail2Ban Alert: IP \$IP gebannt für \$JAIL"
-BODY="IP: \$IP wurde für den Dienst \$JAIL gesperrt. Grund: \$REASON. Bitte kontaktieren Sie uns, falls dies ein Fehler ist."
+SUBJECT="Fail2Ban Alert: ABUSE für IP \$IP"
+BODY="Die IP-Adresse \$IP wurde aufgrund verdächtiger Aktivitäten für den Dienst \$JAIL gesperrt. Grund: \$REASON. Detaillierte Informationen über den Ban sind beigefügt."
 
 # Sende E-Mail an dich und, falls vorhanden, an die Abuse-Adresse
-echo -e "\$BODY" | mail -s "\$SUBJECT" "\$EMAIL"
-
-if [ -n "\$ABUSE_EMAIL" ]; then
-    echo -e "\$BODY" | mail -s "\$SUBJECT" "\$ABUSE_EMAIL"
-else
-    echo "Keine Abuse-E-Mail für \$IP gefunden."
-fi
+echo -e "\$BODY" | mail -s "\$SUBJECT" -c "$EMPFÄNGER" "\$ABUSE_EMAIL"
 EOF"
 
 # Skript ausführbar machen
@@ -89,6 +83,52 @@ actionban = /etc/fail2ban/action.d/send_abuse_mail.sh <ip> <jail> <reason>
 
 [sshd]
 enabled = true
+
+# Zusätzliche Jails für gängige Dienste
+[apache-auth]
+enabled = true
+logpath = /var/log/apache*/*error.log
+maxretry = 3
+
+[nginx-http-auth]
+enabled = true
+logpath = /var/log/nginx/error.log
+maxretry = 3
+
+[apache-badbots]
+enabled = true
+logpath = /var/log/apache*/*access.log
+maxretry = 2
+
+[postfix]
+enabled = true
+logpath = /var/log/mail.log
+maxretry = 3
+
+[dovecot]
+enabled = true
+logpath = /var/log/mail.log
+maxretry = 3
+
+[vsftpd]
+enabled = true
+logpath = /var/log/vsftpd.log
+maxretry = 5
+
+[proftpd]
+enabled = true
+logpath = /var/log/proftpd/proftpd.log
+maxretry = 5
+
+[pam-generic]
+enabled = true
+logpath = /var/log/auth.log
+maxretry = 6
+
+[sshd-ddos]
+enabled = true
+logpath = /var/log/auth.log
+maxretry = 6
 EOF"
 
 # Schritt 6: Fail2ban-Dienst aktivieren und starten

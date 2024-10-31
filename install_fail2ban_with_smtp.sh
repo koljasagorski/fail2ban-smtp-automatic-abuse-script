@@ -1,34 +1,31 @@
 #!/bin/bash
 
-# Script zur Deinstallation, Installation und Konfiguration von Fail2ban und Postfix für SMTP-E-Mail-Benachrichtigungen
-# Sendet bei jedem Ban eine E-Mail an die eigene Adresse und die "Abuse"-Adresse der gebannten IP
-
-# Variablen für Konfiguration
+# SMTP-Serverkonfiguration
 SERVER=""
 USERNAME=""
 PASSWORD=""
 ABSENDER=""
-EMPFÄNGER=""
+EMPFAENGER=""
 
-# Schritt 1: Alte Fail2Ban-Version deinstallieren
-echo "Entferne alte Fail2ban-Version, falls vorhanden..."
+# Entfernen alter Installationen
+echo "Entferne alte Versionen von Fail2ban, Postfix und Mailutils..."
 sudo systemctl stop fail2ban
-sudo apt remove --purge -y fail2ban
+sudo apt remove --purge -y fail2ban postfix mailutils whois
 
-# Schritt 2: Installation von Fail2ban, Postfix und Mailutils
-echo "Aktualisiere Paketlisten und installiere Fail2ban, Postfix und mailutils..."
+# Installation von benötigten Paketen
+echo "Aktualisiere Paketlisten und installiere Fail2ban, Postfix, Mailutils und Whois..."
 sudo apt update
 echo "postfix postfix/mailname string $ABSENDER" | sudo debconf-set-selections
 echo "postfix postfix/main_mailer_type string 'Internet Site'" | sudo debconf-set-selections
 sudo apt install -y fail2ban postfix mailutils whois
 
-# Schritt 3: Postfix als SMTP-Client konfigurieren
-echo "Konfiguriere Postfix für die Verwendung von SMTP..."
+# Postfix für SMTP konfigurieren
+echo "Konfiguriere Postfix für SMTP..."
 sudo bash -c "cat > /etc/postfix/sasl_passwd << EOF
 [$SERVER]:587 $USERNAME:$PASSWORD
 EOF"
 
-# Setze Berechtigungen für die Passwortdatei und konfiguriere Postfix
+# Berechtigungen setzen und Postfix-Konfiguration anwenden
 sudo chmod 600 /etc/postfix/sasl_passwd
 sudo postconf -e "relayhost = [$SERVER]:587"
 sudo postconf -e "smtp_sasl_auth_enable = yes"
@@ -40,103 +37,157 @@ sudo postconf -e "smtp_tls_note_starttls_offer = yes"
 sudo postmap /etc/postfix/sasl_passwd
 sudo systemctl restart postfix
 
-# Schritt 4: Skript zur automatischen Abuse-Benachrichtigung erstellen
-echo "Erstelle Skript zur automatischen Benachrichtigung der Abuse-Abteilung..."
+# Abuse-Benachrichtigungs-Skript erstellen
+echo "Erstelle Abuse-Benachrichtigungs-Skript..."
 sudo bash -c "cat > /etc/fail2ban/action.d/send_abuse_mail.sh << 'EOF'
 #!/bin/bash
 
 IP="\$1"
 JAIL="\$2"
 REASON="\$3"
-EMAIL="$EMPFÄNGER"
+CC_EMAIL="$EMPFAENGER"
 
-# Ermittelt die Abuse-Adresse
-ABUSE_EMAIL=\$(whois "\$IP" | grep -Ei 'abuse|e-mail:' | grep -Eo '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}' | head -n 1)
+# Ermittelt die Abuse-Adresse der gebannten IP
+ABUSE_EMAIL=\$(whois "\$IP" | grep -i abuse | grep -Eo '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}' | head -n 1)
+if [ -z "\$ABUSE_EMAIL" ]; then
+    ABUSE_EMAIL=\$(whois "\$IP" | grep -i 'e-mail' | grep -Eo '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}' | head -n 1)
+fi
 
-# Nachrichtentext und Betreff
-SUBJECT="Fail2Ban Alert: ABUSE für IP \$IP"
-BODY="Die IP-Adresse \$IP wurde aufgrund verdächtiger Aktivitäten für den Dienst \$JAIL gesperrt. Grund: \$REASON. Detaillierte Informationen über den Ban sind beigefügt."
+# Ban-Verlauf von Fail2Ban abrufen
+BAN_LOG=\$(sudo fail2ban-client status "\$JAIL" | grep "\$IP")
 
-# Sende E-Mail an dich und, falls vorhanden, an die Abuse-Adresse
-echo -e "\$BODY" | mail -s "\$SUBJECT" -c "$EMPFÄNGER" "\$ABUSE_EMAIL"
+# Nachrichtentext und Betreff der E-Mail
+SUBJECT="ABUSE Notification: IP \$IP banned for malicious activity"
+BODY="Dear Abuse Team,
+
+This is an automated notification that the IP address \$IP has been banned on our server due to suspicious activity detected by Fail2Ban.
+
+**Ban Details:**
+- Service: \$JAIL
+- Reason: \$REASON
+
+**Ban History and Logs:**
+The following details are recorded regarding the ban:
+\$BAN_LOG
+
+**Incident Summary:**
+The IP address \$IP has been identified as engaging in potentially harmful activity that triggered our security mechanisms. As a result, it has been temporarily banned to prevent further unauthorized access attempts.
+
+If this ban was issued in error or if you require more information, please contact us at your earliest convenience.
+
+Sincerely,
+System Administrator"
+
+# E-Mail senden
+if [ -n "\$ABUSE_EMAIL" ]; then
+    {
+        echo "To: \$ABUSE_EMAIL"
+        echo "Cc: \$CC_EMAIL"
+        echo "Subject: \$SUBJECT"
+        echo
+        echo "\$BODY"
+    } | sendmail -t
+else
+    echo "Keine Abuse-E-Mail-Adresse für \$IP gefunden."
+fi
 EOF"
 
 # Skript ausführbar machen
 sudo chmod +x /etc/fail2ban/action.d/send_abuse_mail.sh
 
-# Schritt 5: Fail2ban konfigurieren, um Benachrichtigungen zu senden
-echo "Konfiguriere Fail2ban mit E-Mail-Benachrichtigungen..."
+# Fail2ban-Konfiguration mit allen verfügbaren Jails
+echo "Konfiguriere Fail2ban mit allen verfügbaren Jails..."
 sudo bash -c "cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
-# E-Mail-Konfiguration
-destemail = $EMPFÄNGER
+destemail = $EMPFAENGER
 sender = $ABSENDER
 mta = mail
-
-# Ban-Parameter
 bantime  = 10m
 findtime  = 10m
 maxretry = 5
 action = %(action_mwl)s
-# Spezielles Action-Skript für Abuse-Benachrichtigungen
 actionban = /etc/fail2ban/action.d/send_abuse_mail.sh <ip> <jail> <reason>
 
 [sshd]
 enabled = true
 
-# Zusätzliche Jails für gängige Dienste
-[apache-auth]
+[sshd-ddos]
 enabled = true
-logpath = /var/log/apache*/*error.log
-maxretry = 3
 
 [nginx-http-auth]
 enabled = true
+port = http,https
 logpath = /var/log/nginx/error.log
-maxretry = 3
+
+[apache-auth]
+enabled = true
+port = http,https
+logpath = /var/log/apache*/*error.log
 
 [apache-badbots]
 enabled = true
-logpath = /var/log/apache*/*access.log
-maxretry = 2
+port = http,https
+logpath = /var/log/apache*/*error.log
 
-[postfix]
+[apache-noscript]
 enabled = true
+port = http,https
+logpath = /var/log/apache*/*error.log
+
+[apache-overflows]
+enabled = true
+port = http,https
+logpath = /var/log/apache*/*error.log
+
+[postfix-sasl]
+enabled = true
+port = smtp,ssmtp
 logpath = /var/log/mail.log
-maxretry = 3
 
 [dovecot]
 enabled = true
+port = pop3,pop3s,imap,imaps
 logpath = /var/log/mail.log
-maxretry = 3
 
 [vsftpd]
 enabled = true
+port = ftp,ftp-data,ftps,ftps-data
 logpath = /var/log/vsftpd.log
-maxretry = 5
 
 [proftpd]
 enabled = true
+port = ftp,ftp-data,ftps,ftps-data
 logpath = /var/log/proftpd/proftpd.log
-maxretry = 5
 
-[pam-generic]
+[pure-ftpd]
 enabled = true
-logpath = /var/log/auth.log
-maxretry = 6
+port = ftp,ftp-data,ftps,ftps-data
+logpath = /var/log/syslog
 
-[sshd-ddos]
+[exim]
 enabled = true
-logpath = /var/log/auth.log
-maxretry = 6
+port = smtp,ssmtp
+logpath = /var/log/exim4/mainlog
+
+[squirrelmail]
+enabled = true
+port = http,https
+logpath = /var/log/squirrelmail/errors
+
 EOF"
 
-# Schritt 6: Fail2ban-Dienst aktivieren und starten
+# Sicherstellen, dass das Verzeichnis und Berechtigungen korrekt sind
+echo "Stelle sicher, dass das Verzeichnis und Berechtigungen für Fail2ban korrekt sind..."
+sudo mkdir -p /var/run/fail2ban
+sudo chown -R root:root /etc/fail2ban
+sudo chmod -R 644 /etc/fail2ban
+
+# Fail2ban-Dienst aktivieren und starten
 echo "Aktiviere und starte Fail2ban-Dienst..."
 sudo systemctl enable fail2ban
 sudo systemctl restart fail2ban
 
-# Schritt 7: Fail2ban-Status prüfen
+# Fail2ban-Status überprüfen
 echo "Status von Fail2ban anzeigen:"
 sudo fail2ban-client status
 

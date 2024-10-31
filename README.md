@@ -9,3 +9,5 @@ curl -fsSL https://raw.githubusercontent.com/koljasagorski/fail2ban-smtp-automat
 Todo:
 - Script anpassen (wirft Fehler aus)
 - Abuse nur bei schwerwiegenden dingen
+- tarpit installieren und einrichten
+- wenn im tarpit jemand was "verbotenes" macht, abuse raus
